@@ -1,5 +1,5 @@
 import socket
-from caching import Caching
+from Caching import Caching
 # Server configuration
 HOST = '127.0.0.1'
 PORT = 8080  # Port must be >= 1024 for user-level processes
@@ -56,7 +56,12 @@ def handle_client(client_socket):
         cached_response = cache.get(url)
         if cached_response:
             log_request(method, url, "200 OK (from cache)")
-            client_socket.sendall(cached_response)
+            if b"\r\n\r\n" in cached_response:
+                header_part, body_part = cached_response.split(b"\r\n\r\n", 1)
+                modified_response = header_part + b"\r\nX-Cache: HIT\r\n\r\n" + body_part
+                client_socket.sendall(modified_response)
+            else:
+             client_socket.sendall(cached_response)
             return
 
 
@@ -87,6 +92,7 @@ def handle_client(client_socket):
 
         # Connect to external server using a new socket
         external_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        external_socket.settimeout(5.0)
         external_socket.connect((webserver, port))
 
         # Forward original request to external server
@@ -98,14 +104,20 @@ def handle_client(client_socket):
         while True:
             response_data = external_socket.recv(4096)
             if len(response_data) > 0:
-                client_socket.sendall(response_data)
                 full_response += response_data
             else:
                 break
 
         external_socket.close()
-        headers = parse_response_headers(full_response)
-        cache.set(url, full_response, headers)
+        if full_response:
+         headers = parse_response_headers(full_response)
+         cache.set(url, full_response, headers)
+         if b"\r\n\r\n" in full_response:
+             header_part, body_part = full_response.split(b"\r\n\r\n", 1)
+             modified_response = header_part + b"\r\nX-Cache: MISS\r\n\r\n" + body_part
+             client_socket.sendall(modified_response)
+         else:
+             client_socket.sendall(full_response)
         # Send response to client
 
         log_request(method, url, "200 OK (from server)")
