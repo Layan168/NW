@@ -1,0 +1,104 @@
+
+
+import socket
+import time
+import sys
+
+def send_http_request(proxy_host, proxy_port, target_url):
+    """
+    Sends an HTTP GET request to the proxy server.
+    Displays response time and whether the response is from cache or web.
+    """
+    try:
+        # Create a TCP socket
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_socket.settimeout(5.0)  # timeout for connection/recv
+
+        # Connect to proxy server
+        client_socket.connect((proxy_host, proxy_port))
+
+        # Construct HTTP GET request for the proxy
+        # Proxy expects the full URL in the request line
+        request_line = f"GET {target_url} HTTP/1.1\r\n"
+        host_header = f"Host: {target_url.split('/')[2]}\r\n"
+        connection_header = "Connection: close\r\n"
+        full_request = request_line + host_header + connection_header + "\r\n"
+
+        # Send request
+        client_socket.send(full_request.encode())
+
+        # Receive response
+        start_time = time.time()
+        response_data = b""
+        while True:
+            try:
+                chunk = client_socket.recv(4096)
+                if not chunk:
+                    break
+                response_data += chunk
+            except socket.timeout:
+                break
+        end_time = time.time()
+
+        # Close socket
+        client_socket.close()
+
+        # Decode response
+        response_str = response_data.decode('utf-8', errors='replace')
+        
+        # Check if response contains cache-hit/miss header (custom or standard)
+        # The proxy may add a custom header like X-Cache: HIT or MISS
+        if "X-Cache: HIT" in response_str:
+            cache_status = "CACHE HIT (from proxy cache)"
+        elif "X-Cache: MISS" in response_str:
+            cache_status = "CACHE MISS (fetched from web)"
+        else:
+            cache_status = "UNKNOWN (no cache header)"
+
+        # Measure time
+        elapsed_time = (end_time - start_time) * 1000  # in ms
+
+        # Print results
+        print("\n" + "="*60)
+        print(f"Request URL: {target_url}")
+        print(f"Proxy: {proxy_host}:{proxy_port}")
+        print(f"Response Time: {elapsed_time:.2f} ms")
+        print(f"Cache Status: {cache_status}")
+        print("-" * 60)
+        print("RESPONSE HEADERS & BODY (first 1000 chars):")
+        print(response_str[:1000])
+        print("="*60 + "\n")
+
+    except socket.error as e:
+        print(f"[ERROR] Socket error: {e}")
+    except Exception as e:
+        print(f"[ERROR] General error: {e}")
+
+def main():
+    # Default proxy settings
+    proxy_host = "127.0.0.1"
+    proxy_port = 8888
+
+    # Test URLs (you can modify or add more)
+    urls = [
+        "http://example.com/",
+        "http://example.com/",  # duplicate to test cache hit
+        "http://neverssl.com/",
+        "http://httpbin.org/html"
+    ]
+
+    print("=== HTTP Proxy Client ===")
+    print(f"Proxy server: {proxy_host}:{proxy_port}")
+    print("Sending requests...\n")
+
+    for url in urls:
+        send_http_request(proxy_host, proxy_port, url)
+        time.sleep(1)  # small delay between requests
+
+    # Allow user to enter a custom URL
+    custom = input("\nEnter a custom URL to fetch (or press Enter to exit): ").strip()
+    if custom:
+        send_http_request(proxy_host, proxy_port, custom)
+
+if __name__ == "__main__":
+    main()
