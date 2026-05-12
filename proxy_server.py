@@ -1,0 +1,171 @@
+import socket
+
+# ========== Class Caching مدمج داخل الملف ==========
+class Caching:
+    def __init__(self):
+        self.cache = {}
+
+    def get(self, url):
+        if url in self.cache:
+            print(f"[CACHE HIT] {url}")
+            return self.cache[url][0]
+        else:
+            print(f"[CACHE MISS] {url}")
+            return None
+
+    def set(self, url, response, headers):
+        cache_control = headers.get("Cache-Control", "")
+        if "no-store" in cache_control:
+            print(f"[LOG] Not cached (no-store): {url}")
+            return
+        self.cache[url] = (response, headers)
+        print(f"[LOG] Cached: {url}")
+# Server configuration
+HOST = '127.0.0.1'
+PORT = 8080  # Port must be >= 1024 for user-level processes
+
+# Firewall block list
+BLOCKED_DOMAINS = ["blocked.com", "example.com"]
+
+cache = Caching()
+def parse_response_headers(response_bytes):
+    """Extract headers from HTTP response bytes."""
+    headers = {}
+    try:
+        header_section = response_bytes.split(b"\r\n\r\n")[0].decode("utf-8", errors="ignore")
+        lines = header_section.split("\r\n")
+        for line in lines[1:]:
+            if ":" in line:
+                key, _, value = line.partition(":")
+                headers[key.strip()] = value.strip()
+    except Exception:
+        pass
+    return headers
+
+
+def log_request(method, url, status):
+    """Log each request with its status."""
+    print(f"[LOG] {method} {url} -> {status}")
+
+
+
+def handle_client(client_socket):
+    try:
+        # Receive raw request from client
+        request_data = client_socket.recv(4096)
+        if not request_data:
+            return
+
+        # Read first line to extract method, URL, and version
+        request_text = request_data.decode('utf-8', errors='ignore')
+        first_line = request_text.split('\n')[0]
+
+        parts = first_line.split()
+        if len(parts) < 3:
+            return
+
+        method, url, version = parts[0], parts[1], parts[2]
+
+        # Only GET requests are allowed
+        if method != "GET":
+            return
+
+        print(f"[*] Received GET request for: {url}")
+
+        # Check cache first
+        cached_response = cache.get(url)
+        if cached_response:
+            log_request(method, url, "200 OK (from cache)")
+            client_socket.sendall(cached_response)
+            return
+
+
+
+
+        # Extract host and port from URL
+        url_without_http = url.replace("http://", "").replace("https://", "")
+        slash_pos = url_without_http.find('/')
+        host_and_port = url_without_http if slash_pos == -1 else url_without_http[:slash_pos]
+
+        # Default port is 80 unless specified in URL
+        port = 80
+        webserver = host_and_port
+        colon_pos = host_and_port.find(':')
+        if colon_pos != -1:
+            webserver = host_and_port[:colon_pos]
+            port = int(host_and_port[colon_pos + 1:])
+
+        # Firewall check - block domains in the block list
+        for blocked in BLOCKED_DOMAINS:
+            if blocked in webserver:
+                print(f"[-] Firewall Blocked: {webserver}")
+                forbidden_response = "HTTP/1.1 403 Forbidden\r\n\r\n<h1>403 Forbidden - Blocked by Firewall</h1>"
+                client_socket.sendall(forbidden_response.encode('utf-8'))
+                return
+
+        print(f"[*] Forwarding to: {webserver}:{port}")
+
+        # Connect to external server using a new socket
+        external_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        external_socket.settimeout(5.0) 
+        external_socket.connect((webserver, port))
+
+        # Forward original request to external server
+        external_socket.sendall(request_data)
+
+        # Receive response and send it back to client
+        # Collect full response
+        full_response = b""
+        while True:
+            try:
+                response_data = external_socket.recv(4096)
+                if len(response_data) > 0:
+                    client_socket.sendall(response_data)
+                    full_response += response_data
+                else:
+                    break
+            except socket.timeout:
+                print(f"[!] Timeout from {webserver}")
+                break    
+
+        external_socket.close()
+        headers = parse_response_headers(full_response)
+        cache.set(url, full_response, headers)
+        # Send response to client
+
+        log_request(method, url, "200 OK (from server)")
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        log_request("?", "?", f"500 Internal Server Error: {e}")
+        try:
+            error_response = "HTTP/1.1 500 Internal Server Error\r\n\r\n<h1>Internal Server Error</h1>"
+            client_socket.sendall(error_response.encode('utf-8'))
+        except Exception:
+            pass
+    finally:
+        client_socket.close()
+
+def start_proxy():
+    # Create and configure TCP server socket
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+    # Start listening for connections
+    server_socket.bind((HOST, PORT))
+    server_socket.listen(5)
+    print(f"[*] Proxy Server running on {HOST}:{PORT}")
+
+    while True:
+        try:
+            # Accept and handle incoming client connection
+            client_socket, client_address = server_socket.accept()
+            handle_client(client_socket)
+        except KeyboardInterrupt:
+            print("\n[*] Server stopped.")
+            break
+
+    server_socket.close()
+
+
+if __name__ == "__main__":
+    start_proxy()
