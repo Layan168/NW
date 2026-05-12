@@ -1,7 +1,7 @@
 
 
 
-class Caching:
+class caching:
     def __init__(self):
         self.cache = {}  # url -> (response_bytes, headers_dict)
 
